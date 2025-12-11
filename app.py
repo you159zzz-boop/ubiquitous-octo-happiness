@@ -7,10 +7,10 @@ from io import BytesIO
 from fpdf import FPDF
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 
-st.set_page_config(page_title="ระบบจัดตารางสอน (Final)", layout="wide")
+st.set_page_config(page_title="ระบบจัดตารางสอน (Final Perfect)", layout="wide")
 
 # ==========================================
-# 1. CSS Styling
+# 1. CSS Styling (หน้าเว็บสวยงาม)
 # ==========================================
 st.markdown("""
 <style>
@@ -23,12 +23,17 @@ st.markdown("""
         text-align: center;
         font-family: 'Sarabun', sans-serif;
         margin-bottom: 20px;
-        font-size: 13px;
+    }
+    /* บังคับโชว์หัวตารางช่องแรก */
+    .custom-table thead tr th:first-child {
+        display: table-cell !important;
+        width: 100px;
+        background-color: #1B5E20;
     }
     .custom-table th {
-        background-color: #1B5E20; /* สีเขียวเข้ม */
+        background-color: #2E7D32;
         color: white;
-        padding: 8px;
+        padding: 5px;
         border: 1px solid #ddd;
         vertical-align: middle;
     }
@@ -36,20 +41,20 @@ st.markdown("""
         padding: 5px;
         border: 1px solid #ddd;
         vertical-align: middle;
-        height: 50px; /* Fix height */
+        font-size: 13px;
     }
-    .time-txt { font-size: 12px; font-weight: bold; color: #FFF176; display: block; }
+    .time-txt { font-size: 12px; font-weight: bold; display: block; margin-bottom: 2px; color: #FFF176; }
     .period-txt { font-size: 11px; font-weight: normal; color: white; }
-    .day-cell { font-weight: bold; background-color: #F1F8E9; color: #2E7D32; width: 80px;}
-    .break-cell { background-color: #EEEEEE; color: #666; font-weight: bold; }
+    .day-cell { font-weight: bold; background-color: #E8F5E9; color: #1b5e20; }
+    .break-cell { background-color: #EEEEEE; color: #666; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. Configuration
+# 2. Config & Constants
 # ==========================================
 DAYS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
-DAYS_TH = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสฯ', 'ศุกร์'] # ย่อชื่อวันให้กระชับ
+DAYS_TH = ['วันจันทร์', 'วันอังคาร', 'วันพุธ', 'วันพฤหัสบดี', 'วันศุกร์']
 DAY_MAP = dict(zip(DAYS_EN, DAYS_TH))
 
 PERIODS = [1, 2, 3, 4, 'Lunch', 5, 6, 7, 8]
@@ -61,18 +66,23 @@ TIME_MAP = {
 }
 
 VIEWS = {
-    'Student': {'lbl': 'นักเรียน (Student)', 'id': 'Group_ID', 'cols': ['Room_ID', 'Subject_ID', 'Teacher_Name'], 'leg': ['รหัส', 'ชื่อวิชา', 'ห้อง', 'ครู'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Room_ID', 'Teacher_Name'], 'pfx': 'G-'},
-    'Teacher': {'lbl': 'ครูผู้สอน (Teacher)', 'id': 'Teacher_ID', 'cols': ['Room_ID', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อวิชา', 'ห้อง', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Room_ID', 'Group_ID'], 'pfx': 'T-'},
-    'Room':    {'lbl': 'ห้องเรียน (Room)', 'id': 'Room_ID', 'cols': ['Teacher_Name', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อวิชา', 'ครู', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Teacher_Name', 'Group_ID'], 'pfx': 'R-'}
+    'Student': {'lbl': 'นักเรียน (Student)', 'id': 'Group_ID', 'cols': ['Room_ID', 'Subject_ID', 'Teacher_Name'], 'leg': ['รหัส', 'ชื่อ', 'ห้อง', 'ครู'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Room_ID', 'Teacher_Name'], 'pfx': 'G-'},
+    'Teacher': {'lbl': 'ครูผู้สอน (Teacher)', 'id': 'Teacher_ID', 'cols': ['Room_ID', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อ', 'ห้อง', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Room_ID', 'Group_ID'], 'pfx': 'T-'},
+    'Room':    {'lbl': 'ห้องเรียน (Room)', 'id': 'Room_ID', 'cols': ['Teacher_Name', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อ', 'ครู', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Teacher_Name', 'Group_ID'], 'pfx': 'R-'}
 }
 
 # ==========================================
-# 3. Validation Logic
+# 3. Data Processing (แก้ชื่อสั้น + Validation)
 # ==========================================
-def clean_str(n): 
-    s = str(n).strip()
-    for p in ['ว่าที่ร้อยตรี', 'ว่าที่ ร.ต.', 'ดร.', 'ผศ.', 'นางสาว', 'นาย', 'นาง', 'Mr.', 'Ms.']:
+def get_short_name(full_name):
+    # 1. ตัดคำนำหน้า
+    s = str(full_name).strip()
+    prefixes = ['ว่าที่ร้อยตรี', 'ว่าที่ ร.ต.', 'ว่าที่ร.ต.', 'ดร.', 'ผศ.', 'รศ.', 'นางสาว', 'นาย', 'นาง', 'Mr.', 'Ms.', 'Mrs.']
+    for p in prefixes:
         s = s.replace(p, '')
+    
+    # 2. ตัดนามสกุล (เอาแค่ชื่อหน้า)
+    s = s.split(' ')[0] 
     return s.strip()
 
 def validate(df, key, name):
@@ -100,7 +110,8 @@ def load_data(files):
             elif 'TeacherID' in df:
                 df, l = validate(df, 'TeacherID', 'Teachers')
                 nm = next((c for c in ['Name','Teacher_Name','ชื่อ','ชื่อ-สกุล'] if c in df.columns), None)
-                df['CleanName'] = df[nm].apply(clean_str) if nm else df['TeacherID']
+                # ใช้ฟังก์ชันใหม่ get_short_name (ชื่อเล่น)
+                df['CleanName'] = df[nm].apply(get_short_name) if nm else df['TeacherID']
                 d['Teachers'] = df
             elif 'Subject_ID' in df: d['Subjects'], l = validate(df, None, 'Subjects')
             else: l = [f"⚠️ ไม่รู้จักไฟล์: {f.name}"]
@@ -125,7 +136,7 @@ def get_categories(df, id_col):
     return cats
 
 # ==========================================
-# 4. Export Engines (Fixed Layout)
+# 4. Export Engines (PDF Fixed Layout)
 # ==========================================
 class PDF(FPDF):
     def footer(self): 
@@ -134,7 +145,7 @@ class PDF(FPDF):
         self.cell(0,10,f'หน้า {self.page_no()}',0,0,'R')
 
 def gen_pdf(df, entities, vkey, t_map):
-    pdf = PDF('L', 'mm', 'A4') # Landscape
+    pdf = PDF('L', 'mm', 'A4')
     pdf.set_auto_page_break(False)
     
     try: pdf.add_font('THSarabunNew','','THSarabunNew.ttf',uni=True)
@@ -142,13 +153,12 @@ def gen_pdf(df, entities, vkey, t_map):
     
     cfg = VIEWS[vkey]
     
-    # --- PDF Dimensions (คำนวณพิกัดเอง 100%) ---
+    # --- PDF Dimensions (ปรับใหม่ให้ตรงล็อค) ---
     MARGIN_LEFT = 10
-    MARGIN_TOP = 20
-    W_DAY = 22
-    W_SLOT = 27
-    W_LUNCH = 18
-    H_HEAD = 14
+    W_DAY = 25       # ความกว้างช่องวัน
+    W_SLOT = 27      # ความกว้างช่องคาบปกติ
+    W_LUNCH = 20     # ความกว้างช่องพักเที่ยง (ลดลงนิดนึงเพื่อให้พอดี)
+    H_HEADER = 14
     H_ROW = 20
     
     entities_list = [entities] if isinstance(entities, str) else entities
@@ -165,82 +175,79 @@ def gen_pdf(df, entities, vkey, t_map):
         pdf.cell(0, 8, f"ตารางสอน: {title}", 0, 1, 'C')
         pdf.ln(8)
         
-        # --- Draw Header ---
-        current_y = pdf.get_y()
-        current_x = MARGIN_LEFT
-        
+        # --- Header Row ---
         pdf.set_font('THSarabunNew', '', 11)
-        pdf.set_fill_color(27, 94, 32) # Dark Green
-        pdf.set_text_color(255, 255, 255)
+        start_y = pdf.get_y()
+        curr_x = MARGIN_LEFT
         
         # 1. Day Column Header
-        pdf.set_xy(current_x, current_y)
-        pdf.cell(W_DAY, H_HEAD, "วัน / เวลา", 1, 0, 'C', 1)
-        current_x += W_DAY
+        pdf.set_fill_color(27, 94, 32)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_xy(curr_x, start_y)
+        pdf.cell(W_DAY, H_HEADER, "วันที่", 1, 0, 'C', 1)
+        curr_x += W_DAY
         
         # 2. Period Headers
         for p in PERIODS:
-            w = W_LUNCH if p=='Lunch' else W_SLOT
-            pdf.set_xy(current_x, current_y)
-            pdf.cell(w, H_HEAD, "", 1, 0, 'C', 1) # Background
+            w = W_LUNCH if p == 'Lunch' else W_SLOT
+            if p == 'Lunch':
+                l1, l2 = "12:30-13:30", "พักกลางวัน"
+            else:
+                l1, l2 = TIME_MAP[p], f"คาบ {p}"
             
-            # Text 1 (Time)
-            pdf.set_text_color(255, 235, 59) # Yellow
-            pdf.set_xy(current_x, current_y + 2)
-            t_text = "12:30-13:30" if p=='Lunch' else TIME_MAP[p]
-            pdf.cell(w, 4, t_text, 0, 2, 'C')
+            pdf.set_xy(curr_x, start_y)
+            pdf.cell(w, H_HEADER, "", 1, 0, 'C', 1) # พื้นหลัง
             
-            # Text 2 (Period)
-            pdf.set_text_color(255, 255, 255) # White
-            lbl = "พักกลางวัน" if p=='Lunch' else f"คาบ {p}"
-            pdf.cell(w, 4, lbl, 0, 0, 'C')
+            pdf.set_text_color(255, 235, 59) # เหลือง
+            pdf.set_xy(curr_x, start_y + 2)
+            pdf.cell(w, 4, l1, 0, 2, 'C') # เวลา
             
-            current_x += w
+            pdf.set_text_color(255, 255, 255) # ขาว
+            pdf.cell(w, 4, l2, 0, 0, 'C') # คาบ
             
-        pdf.set_text_color(0, 0, 0) # Reset color
-        current_y += H_HEAD
+            curr_x += w
+            
+        pdf.set_text_color(0, 0, 0)
+        current_y = start_y + H_HEADER
         
-        # --- Draw Rows ---
+        # --- Data Rows ---
         for d in DAYS_EN:
             current_x = MARGIN_LEFT
             
-            # Day Cell
+            # 1. Day Column (ซ้ายสุด)
             pdf.set_font('THSarabunNew', '', 13)
-            pdf.set_fill_color(241, 248, 233) # Light Green
+            pdf.set_fill_color(241, 248, 233)
             pdf.set_xy(current_x, current_y)
             pdf.cell(W_DAY, H_ROW, DAY_MAP[d], 1, 0, 'C', 1)
             current_x += W_DAY
             
-            # Slots
+            # 2. Period Slots
             for p in PERIODS:
                 w = W_LUNCH if p=='Lunch' else W_SLOT
                 pdf.set_xy(current_x, current_y)
                 
                 if p == 'Lunch':
+                    # พักเที่ยง (ตรงกับ 12:30 เป๊ะเพราะใช้ W_LUNCH เท่ากัน)
                     pdf.set_fill_color(238, 238, 238)
                     pdf.cell(w, H_ROW, "พัก", 1, 0, 'C', 1)
                 else:
-                    # Data Cell
                     r = sub[(sub['Day']==d) & (sub['Period']==p)]
                     pdf.set_fill_color(255, 255, 255)
-                    pdf.rect(current_x, current_y, w, H_ROW) # Border box
+                    pdf.rect(current_x, current_y, w, H_ROW)
                     
                     if not r.empty:
-                        # Content (Strict Cut)
-                        l1 = str(r.iloc[0][cfg['cols'][0]])[:12] # ห้อง
-                        l2 = str(r.iloc[0][cfg['cols'][1]])[:13] # รหัสวิชา
-                        l3 = str(r.iloc[0][cfg['cols'][2]])[:13] # ครู/กลุ่ม
+                        # ข้อมูลในช่อง (ตัดคำให้สั้นลงอีก)
+                        # l1=ห้อง, l2=วิชา, l3=ชื่อสั้น
+                        l1 = str(r.iloc[0][cfg['cols'][0]])[:12]
+                        l2 = str(r.iloc[0][cfg['cols'][1]])[:14]
+                        l3 = str(r.iloc[0][cfg['cols'][2]])[:14] # ชื่อสั้นแล้ว
                         
-                        pdf.set_font('THSarabunNew', '', 9) # Small Font
-                        
-                        # Fix Position Lines
-                        pdf.set_xy(current_x, current_y + 2)
-                        pdf.cell(w, 4, l1, 0, 0, 'C')
-                        pdf.set_xy(current_x, current_y + 7)
-                        pdf.cell(w, 4, l2, 0, 0, 'C')
-                        pdf.set_xy(current_x, current_y + 12)
+                        pdf.set_font('THSarabunNew', '', 10)
+                        pdf.set_xy(current_x, current_y + 2.5)
+                        pdf.cell(w, 4, l1, 0, 2, 'C')
+                        pdf.cell(w, 4, l2, 0, 2, 'C')
                         pdf.cell(w, 4, l3, 0, 0, 'C')
-                        
+                
                 current_x += w
             current_y += H_ROW
             
@@ -251,7 +258,6 @@ def gen_pdf(df, entities, vkey, t_map):
         pdf.cell(0, 6, "รายละเอียดรายวิชา:", 0, 1, 'L')
         current_y += 7
         
-        # Legend Header
         pdf.set_fill_color(224, 224, 224)
         wds = [25, 90, 40, 50]
         pdf.set_xy(MARGIN_LEFT, current_y)
@@ -259,11 +265,10 @@ def gen_pdf(df, entities, vkey, t_map):
             pdf.cell(wds[i], 6, h, 1, 0, 'C', 1)
         current_y += 6
         
-        # Legend Body
         pdf.set_font('THSarabunNew', '', 10)
         leg_df = sub[cfg['leg_c']].drop_duplicates()
         for _, r in leg_df.iterrows():
-            if current_y > 185: # Check page end
+            if current_y > 185:
                 pdf.add_page(); current_y = 20
                 
             pdf.set_xy(MARGIN_LEFT, current_y)
@@ -319,17 +324,18 @@ if up:
             
     if len(data) == 4:
         st.sidebar.success("✅ ข้อมูลพร้อม")
+        # ใช้ชื่อสั้นในการ Map
         t_map = dict(zip(data['Teachers']['TeacherID'], data['Teachers']['CleanName']))
         
         if st.sidebar.button("🚀 สร้างตาราง"):
-            with st.spinner("กำลังจัดตารางสอน (AI)..."):
+            with st.spinner("กำลังจัดตารางสอน..."):
                 res, una = SchedulerCSP(data['Teachers'], data['Subjects'], data['Rooms'], data['Groups']).generate_schedule(45)
                 if [i for l in res.values() for i in l]:
                     df = pd.DataFrame([i for l in res.values() for i in l])
                     df['Teacher_Name'] = df['Teacher_ID'].map(t_map).fillna(df['Teacher_ID'])
                     st.session_state.update(res=df, una=una, t_map=t_map)
                     if not una: st.success("🎉 สำเร็จ 100%")
-                    else: st.warning(f"⚠️ จัดไม่ได้ {len(una)} รายการ")
+                    else: st.warning(f"⚠️ ตกหล่น {len(una)} รายการ")
                 else: st.error("❌ ล้มเหลว")
     else: st.sidebar.warning(f"ไฟล์ไม่ครบ: {set(['Groups','Rooms','Teachers','Subjects']) - data.keys()}")
 
@@ -349,8 +355,8 @@ if 'res' in st.session_state:
         sub['Disp'] = sub[cfg['cols'][0]] + "<br>" + sub[cfg['cols'][1]] + "<br>" + sub[cfg['cols'][2]]
         piv = sub.pivot_table(index='Day', columns='Period', values='Disp', aggfunc='first').reindex(DAYS_EN).fillna("-")
         
-        # --- HTML Table Construction ---
-        h = "<table class='custom-table'><thead><tr><th>วัน / เวลา</th>"
+        # HTML Preview
+        h = "<table class='custom-table'><thead><tr><th>วันที่</th>"
         for p in PERIODS:
             if p == 'Lunch': t_str, lbl = "12:30 - 13:30", "พักกลางวัน"
             else: t_str, lbl = TIME_MAP.get(p, ""), f"คาบ {p}"
@@ -374,12 +380,9 @@ if 'res' in st.session_state:
         ref_df = sub[cfg['leg_c']].drop_duplicates()
         ref_df.columns = cfg['leg']
         c2.table(ref_df)
-        
         c2.download_button("📄 PDF หน้านี้", gen_pdf(df, sel, vkey, t_map), f"{sel}.pdf", "application/pdf")
 
     st.divider(); st.subheader("💾 ดาวน์โหลดทั้งหมด")
-    
-    # --- TABS: Restore Download by Major ---
     tab1, tab2 = st.tabs(["📁 รวมเล่ม (All)", "📂 แยกสาขา (By Major)"])
     
     with tab1:
@@ -389,10 +392,10 @@ if 'res' in st.session_state:
             if cols[i+1].button(f"📄 PDF {v['lbl'].split('(')[0]}"):
                 with st.spinner("Generating..."):
                     st.session_state[f'p_{k}'] = gen_pdf(df, sorted(df[v['id']].unique()), k, t_map)
-            if f'p_{k}' in st.session_state: cols[i+1].download_button("⬇️ โหลด", st.session_state[f'p_{k}'], f"{k}s.pdf")
+            if f'p_{k}' in st.session_state: cols[i+1].download_button("⬇️ โหลด", st.session_state[f'p_{k}'], f"{k}s_Book.pdf")
 
     with tab2:
-        st.info("💡 ดาวน์โหลดเฉพาะสาขาที่ต้องการ (เช่น AUTO, ELEC)")
+        st.info("💡 ดาวน์โหลด PDF แยกตามสาขาวิชา")
         cats = get_categories(df, 'Group_ID')
         cat_cols = st.columns(4)
         for i, (cat, items) in enumerate(cats.items()):
