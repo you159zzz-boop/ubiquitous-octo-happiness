@@ -4,18 +4,56 @@ from io import BytesIO
 from fpdf import FPDF
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 
-st.set_page_config(page_title="ระบบจัดตารางสอน (Thai)", layout="wide")
-st.markdown("<style>thead tr th:first-child {display:none} tbody th {display:none} table {text-align:center !important}</style>", unsafe_allow_html=True)
+st.set_page_config(page_title="ระบบจัดตารางสอน (Final)", layout="wide")
+
+# --- CSS Styling (ปรับปรุงใหม่ให้หัวตารางยืดหยุ่น) ---
+st.markdown("""
+<style>
+    /* ซ่อน Index เดิมของ Streamlit */
+    thead tr th:first-child {display:none}
+    tbody th {display:none}
+    
+    /* ปรับแต่งตาราง HTML ที่เราสร้างเอง */
+    .custom-table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: center;
+        font-family: 'Sarabun', sans-serif;
+    }
+    .custom-table th {
+        background-color: #2E7D32; /* สีเขียวเข้ม สบายตา */
+        color: white;
+        padding: 10px;
+        border: 1px solid #ddd;
+        white-space: normal; /* ยอมให้ตัดคำ */
+        vertical-align: middle;
+    }
+    .custom-table td {
+        padding: 8px;
+        border: 1px solid #ddd;
+        vertical-align: middle;
+    }
+    .time-label {
+        font-size: 14px;
+        font-weight: bold;
+        display: block;
+    }
+    .period-label {
+        font-size: 12px;
+        font-weight: normal;
+        opacity: 0.9;
+        display: block;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- Config ---
-# แปลงวันเป็นภาษาไทย
 DAYS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
-DAYS_TH = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์']
+DAYS_TH = ['วันจันทร์', 'วันอังคาร', 'วันพุธ', 'วันพฤหัสบดี', 'วันศุกร์']
 DAY_MAP = dict(zip(DAYS_EN, DAYS_TH))
 
 PERIODS = [1, 2, 3, 4, 'Lunch', 5, 6, 7, 8]
 
-# เวลาเรียน (แสดงบนหัวตาราง)
 TIME_MAP = {
     1: "08:30-09:30",
     2: "09:30-10:30",
@@ -34,7 +72,7 @@ VIEWS = {
     'Room':    {'lbl': 'ห้องเรียน (Room)', 'id': 'Room_ID', 'cols': ['Teacher_Name', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อ', 'ครู', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Teacher_Name', 'Group_ID'], 'pfx': 'R-'}
 }
 
-# --- Utils ---
+# --- Validator ---
 def clean(n): return re.sub(r'^(ว่าที่\s?ร\.?ต\.?|ดร\.|ผศ\.|นางสาว|นาย|นาง|Mr\.|Ms\.)\s*', '', str(n).strip()) if pd.notna(n) else ""
 
 def load_data(files):
@@ -44,7 +82,6 @@ def load_data(files):
             df = pd.read_csv(f, dtype=str) if f.name.endswith('.csv') else pd.read_excel(f, dtype=str)
             df.columns = [c.strip() for c in df.columns]
             
-            # Identify
             if 'GroupID' in df: d['Groups'] = df
             elif 'RoomID' in df: d['Rooms'] = df
             elif 'TeacherID' in df:
@@ -53,9 +90,18 @@ def load_data(files):
                 d['Teachers'] = df
             elif 'Subject_ID' in df: d['Subjects'] = df
         except Exception as e: logs.append(f"Error {f.name}: {e}")
+    
+    if len(d) == 4:
+        sub = d['Subjects']
+        vt, vg = set(d['Teachers']['TeacherID']), set(d['Groups']['GroupID'])
+        bad_t = sub[~sub['Teacher_ID'].isin(vt)]
+        if not bad_t.empty: d['Subjects'] = sub[sub['Teacher_ID'].isin(vt)]
+        bad_g = sub[~sub['Group_ID'].isin(vg)]
+        if not bad_g.empty: d['Subjects'] = d['Subjects'][d['Subjects']['Group_ID'].isin(vg)]
+            
     return d, logs
 
-# --- PDF Engine ---
+# --- PDF ---
 class PDF(FPDF):
     def footer(self): self.set_y(-15); self.set_font('THSarabunNew','',10); self.cell(0,10,f'หน้า {self.page_no()}',0,0,'R')
 
@@ -72,23 +118,27 @@ def gen_pdf(df, entities, vkey, t_map):
         title = t_map.get(ent, ent) if vkey=='Teacher' else ent
         pdf.cell(0, 10, f"ตารางสอน: {title}", 0, 1, 'C')
         
-        # Header
+        # Header (Time First)
         pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 12, "วัน / เวลา", 1, 0, 'C', 1)
         for p in PERIODS:
-            txt = "พักกลางวัน" if p=='Lunch' else f"คาบ {p}\n{TIME_MAP[p]}"
-            w = 15 if p=='Lunch' else 27
-            # ใช้ MultiCell ใน Header เพื่อให้เวลาอยู่บรรทัดล่าง
+            if p=='Lunch':
+                txt = "12:30-13:30\n(พักกลางวัน)"
+                w = 20
+            else:
+                txt = f"{TIME_MAP[p]}\n(คาบ {p})"
+                w = 26
+            
             x,y = pdf.get_x(), pdf.get_y()
             pdf.multi_cell(w, 6, txt, 1, 'C', 1)
-            pdf.set_xy(x+w, y) # Move cursor back
+            pdf.set_xy(x+w, y)
         pdf.ln(12)
         
         # Grid
         for d in DAYS_EN:
             pdf.set_font_size(14)
-            pdf.cell(20, 22, DAY_MAP[d], 1, 0, 'C', 1) # แสดงวันภาษาไทย
+            pdf.cell(20, 22, DAY_MAP[d], 1, 0, 'C', 1)
             for p in PERIODS:
-                w = 15 if p=='Lunch' else 27
+                w = 20 if p=='Lunch' else 26
                 if p=='Lunch': pdf.set_fill_color(220); pdf.cell(w, 22, "พัก", 1, 0, 'C', 1)
                 else:
                     r = sub[(sub['Day']==d) & (sub['Period']==p)]
@@ -98,7 +148,6 @@ def gen_pdf(df, entities, vkey, t_map):
                     else: pdf.cell(w, 22, "", 1, 0)
             pdf.ln()
         
-        # Legend
         pdf.ln(5); pdf.set_font_size(12); pdf.cell(0, 8, "รายละเอียดรายวิชา:", 0, 1, 'L'); pdf.set_fill_color(230)
         wds = [25, 80, 40, 45]; [pdf.cell(wds[i], 7, h, 1, 0, 'C', 1) for i,h in enumerate(cfg['leg'])]; pdf.ln()
         for _,r in sub[cfg['leg_c']].drop_duplicates().iterrows():
@@ -122,23 +171,22 @@ def gen_excel(df, t_map):
                 try: piv.insert(4, 'Lunch', 'พักกลางวัน') 
                 except: pass
                 
-                # แปลง Index (วัน) และ Columns (เวลา) เป็นไทย/เวลา
                 piv.index = piv.index.map(DAY_MAP)
-                piv.columns = [TIME_MAP.get(c, str(c)).replace("\n", " ") if c!='Lunch' else "พักกลางวัน" for c in piv.columns]
+                piv.columns = [TIME_MAP.get(c, str(c)) if c!='Lunch' else "12:30-13:30" for c in piv.columns]
                 
                 sh_name = f"{cfg['pfx']}{str(ent)[:20]}".replace(":","").replace("/","-")
-                piv.to_excel(writer, sheet_name=sh_name)
+                piv.fillna('').to_excel(writer, sheet_name=sh_name)
                 
                 ws = writer.sheets[sh_name]
                 ws.column_dimensions['A'].width = 15
                 for c in range(2, 12): 
                     ws.column_dimensions[chr(64+c)].width = 25
-                    ws.cell(row=1, column=c).alignment = align # Header align
+                    ws.cell(row=1, column=c).alignment = align
                 
                 for row in ws.iter_rows():
                     for cell in row:
                         cell.alignment = align; cell.border = thin
-                        if cell.row == 1: cell.font = Font(bold=True); cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+                        if cell.row == 1: cell.font = Font(bold=True); cell.fill = PatternFill(start_color="4CAF50", end_color="4CAF50", fill_type="solid")
     return out.getvalue()
 
 # ================= MAIN UI =================
@@ -147,14 +195,14 @@ up = st.sidebar.file_uploader("Upload CSV/Excel", accept_multiple_files=True)
 
 if up:
     data, logs = load_data(up)
-    if logs: st.sidebar.warning(f"Logs: {len(logs)} items")
+    if logs: st.sidebar.warning(f"Validation: {len(logs)} issues found")
             
     if len(data) == 4:
         st.sidebar.success("✅ ข้อมูลพร้อม")
         t_map = dict(zip(data['Teachers']['TeacherID'], data['Teachers']['CleanName']))
         
         if st.sidebar.button("🚀 สร้างตาราง"):
-            with st.spinner("กำลังจัดตารางสอน..."):
+            with st.spinner("กำลังจัดตาราง..."):
                 res, una = SchedulerCSP(data['Teachers'], data['Subjects'], data['Rooms'], data['Groups']).generate_schedule(45)
                 if [i for l in res.values() for i in l]:
                     df = pd.DataFrame([i for l in res.values() for i in l])
@@ -170,7 +218,6 @@ if 'res' in st.session_state:
     if st.session_state.una: st.expander("รายการตกหล่น").write(st.session_state.una)
     st.divider()
     
-    # Preview
     c1, c2 = st.columns([1, 4])
     vkey = c1.radio("มุมมอง:", list(VIEWS.keys()), format_func=lambda x: VIEWS[x]['lbl'])
     cfg = VIEWS[vkey]
@@ -182,23 +229,30 @@ if 'res' in st.session_state:
         sub['Disp'] = sub[cfg['cols'][0]] + "<br>" + sub[cfg['cols'][1]] + "<br>" + sub[cfg['cols'][2]]
         piv = sub.pivot_table(index='Day', columns='Period', values='Disp', aggfunc='first').reindex(DAYS_EN).fillna("-")
         
-        # Build HTML Table (Time Headers)
-        h = "<table style='width:100%; text-align:center; border-collapse:collapse;'><tr style='background:#f0f2f6'><th>วัน</th>"
+        # --- HTML Table Construction (Fix Header) ---
+        h = "<table class='custom-table'><thead><tr><th>วัน / เวลา</th>"
         for p in PERIODS:
-            txt = "พัก<br>12:30" if p=='Lunch' else f"คาบ {p}<br><span style='font-size:0.8em;color:gray'>{TIME_MAP[p]}</span>"
-            h += f"<th>{txt}</th>"
-        h += "</tr>"
+            if p == 'Lunch':
+                time_str = "12:30 - 13:30"
+                label = "พักกลางวัน"
+            else:
+                time_str = TIME_MAP.get(p, "")
+                label = f"คาบ {p}"
+            # ใส่เวลาบรรทัดแรก ตัวหนา
+            h += f"<th><span class='time-label'>{time_str}</span><br><span class='period-label'>{label}</span></th>"
+        h += "</tr></thead><tbody>"
         
         for d in DAYS_EN:
-            h += f"<tr><td style='font-weight:bold; background:#fafafa;'>{DAY_MAP[d]}</td>" # วันภาษาไทย
+            h += f"<tr><td style='font-weight:bold; background:#f9f9f9;'>{DAY_MAP[d]}</td>"
             for p in PERIODS:
                 v = "พัก" if p=='Lunch' else (piv.at[d,p] if p in piv.columns and pd.notna(piv.at[d,p]) else "-")
                 bg = "background:#eee;" if p=='Lunch' else ""
-                h += f"<td style='border:1px solid #ddd; padding:8px; {bg}'>{v}</td>"
+                h += f"<td style='{bg}'>{v}</td>"
             h += "</tr>"
+        h += "</tbody></table>"
         
         c2.markdown(f"### {t_map.get(sel,sel) if vkey=='Teacher' else sel}")
-        c2.markdown(h+"</table>", unsafe_allow_html=True)
+        c2.markdown(h, unsafe_allow_html=True)
         
         c2.markdown("#### ℹ️ รายละเอียด")
         c2.table(sub[cfg['leg_c']].drop_duplicates().set_axis(cfg['leg'], axis=1))
