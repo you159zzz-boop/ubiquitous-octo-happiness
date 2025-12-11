@@ -11,8 +11,8 @@ st.markdown("<style>thead tr th:first-child {display:none} tbody th {display:non
 DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
 PERIODS = [1, 2, 3, 4, 'Lunch', 5, 6, 7, 8]
 
-# กำหนดช่วงเวลา (แก้ไขเวลาตรงนี้ได้)
-TIME_MAP = {
+# กำหนดเวลาเรียน (แก้เวลาตรงนี้ได้)
+TIMES = {
     1: "08:30-09:30",
     2: "09:30-10:30",
     3: "10:30-11:30",
@@ -30,7 +30,7 @@ VIEWS = {
     'Room':    {'lbl': 'ห้องเรียน (Room)', 'id': 'Room_ID', 'cols': ['Teacher_Name', 'Subject_ID', 'Group_ID'], 'leg': ['รหัส', 'ชื่อ', 'ครู', 'นร.'], 'leg_c': ['Subject_ID', 'Subject_Name', 'Teacher_Name', 'Group_ID'], 'pfx': 'R-'}
 }
 
-# --- Validator Core ---
+# --- Validator ---
 def clean(n): return re.sub(r'^(ว่าที่\s?ร\.?ต\.?|ดร\.|ผศ\.|นางสาว|นาย|นาง|Mr\.|Ms\.)\s*', '', str(n).strip()) if pd.notna(n) else ""
 
 def validate(df, key, name):
@@ -73,7 +73,6 @@ def load_data(files):
         if not bad_g.empty:
             d['Subjects'] = d['Subjects'][d['Subjects']['Group_ID'].isin(vg)]
             logs.append(f"❌ ตัดวิชาทิ้ง {len(bad_g)} รายการ (รหัสกลุ่มผิด)")
-            
     return d, logs
 
 # --- Engines ---
@@ -93,17 +92,17 @@ def gen_pdf(df, entities, vkey, t_map):
         title = t_map.get(ent, ent) if vkey=='Teacher' else ent
         pdf.cell(0, 10, f"ตารางสอน: {title}", 0, 1, 'C')
         
-        # Table Header (ใส่เวลา)
-        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 8, "Day/Time", 1, 0, 'C', 1)
+        # Header with Time
+        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 10, "Day/Time", 1, 0, 'C', 1)
         for p in PERIODS: 
-            w = 15 if p=='Lunch' else 27
-            txt = TIME_MAP.get(p, str(p)) # ดึงเวลาจาก TIME_MAP
-            pdf.cell(w, 8, txt, 1, 0, 'C', 1)
+            t_str = TIMES.get(p, "")
+            # ถ้าเป็น Lunch ให้แสดงแค่เวลา หรือคำว่าพัก
+            label = "พักกลางวัน" if p == 'Lunch' else f"{t_str}"
+            pdf.cell(15 if p=='Lunch' else 27, 10, label, 1, 0, 'C', 1)
         pdf.ln()
         
-        # Grid
         for d in DAYS:
-            pdf.set_font_size(14)
+            pdf.set_font_size(14) # คืนค่าขนาดฟอนต์สำหรับเนื้อหา
             pdf.cell(20, 22, d, 1, 0, 'C', 1)
             for p in PERIODS:
                 w = 15 if p=='Lunch' else 27
@@ -127,42 +126,31 @@ def gen_excel(df, t_map):
     out = BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Raw')
+        align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        thin = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
         
-        # Styles
-        center_style = Alignment(horizontal='center', vertical='center', wrap_text=True)
-        header_font = Font(bold=True)
-        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
-
         for k, cfg in VIEWS.items():
             col = f'Disp_{k}'; df[col] = df[cfg['cols'][0]] + "\n" + df[cfg['cols'][1]] + "\n" + df[cfg['cols'][2]]
             for ent in sorted(df[cfg['id']].unique()):
                 sub = df[df[cfg['id']] == ent]
                 if sub.empty: continue
-                
                 piv = sub.pivot_table(index='Day', columns='Period', values=col, aggfunc='first').reindex(DAYS).reindex(columns=[1,2,3,4,5,6,7,8])
                 try: piv.insert(4, 'Lunch', 'พักกลางวัน') 
                 except: pass
                 
-                # เปลี่ยนชื่อ Column ใน Excel เป็นเวลา
-                piv = piv.rename(columns=TIME_MAP)
+                # เปลี่ยน Header เป็นเวลา
+                piv.columns = [TIMES.get(c, c) for c in piv.columns]
                 
                 sh_name = f"{cfg['pfx']}{str(ent)[:20]}".replace(":","").replace("/","-")
                 piv.fillna('').to_excel(writer, sheet_name=sh_name)
                 
-                # Apply Styles
                 ws = writer.sheets[sh_name]
                 ws.column_dimensions['A'].width = 15
-                for c in range(2, 12): # 10 columns (time slots)
-                    ws.column_dimensions[chr(64+c)].width = 22
-                
+                for c in range(2, 12): ws.column_dimensions[chr(64+c)].width = 22
                 for row in ws.iter_rows():
                     for cell in row:
-                        cell.alignment = center_style
-                        cell.border = thin_border
-                        if cell.row == 1: 
-                            cell.font = header_font
-                            cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-
+                        cell.alignment = align; cell.border = thin
+                        if cell.row == 1: cell.font = Font(bold=True); cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
     return out.getvalue()
 
 # ================= MAIN UI =================
@@ -212,11 +200,12 @@ if 'res' in st.session_state:
         sub['Disp'] = sub[cfg['cols'][0]] + "<br>" + sub[cfg['cols'][1]] + "<br>" + sub[cfg['cols'][2]]
         piv = sub.pivot_table(index='Day', columns='Period', values='Disp', aggfunc='first').reindex(DAYS).fillna("-")
         
-        # HTML Table Construction (ใส่เวลาใน Header)
+        # HTML Table Construction (Header with Time)
         h = "<table style='width:100%; text-align:center; border-collapse:collapse;'><tr style='background:#f0f2f6'><th>Day/Time</th>"
         for p in PERIODS:
-            txt = TIME_MAP.get(p, str(p)) # ใช้เวลาจริง
-            h += f"<th>{txt}</th>"
+            t_str = TIMES.get(p, "")
+            lbl = "พักกลางวัน" if p == 'Lunch' else f"คาบ {p}<br><span style='font-size:0.8em; color:gray'>{t_str}</span>"
+            h += f"<th>{lbl}</th>"
         h += "</tr>"
         
         for d in DAYS:
