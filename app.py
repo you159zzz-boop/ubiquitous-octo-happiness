@@ -6,14 +6,14 @@ from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 
 st.set_page_config(page_title="ระบบจัดตารางสอน (Final)", layout="wide")
 
-# --- CSS Styling (ปรับปรุงใหม่ให้หัวตารางยืดหยุ่น) ---
+# --- CSS Styling ---
 st.markdown("""
 <style>
     /* ซ่อน Index เดิมของ Streamlit */
     thead tr th:first-child {display:none}
     tbody th {display:none}
     
-    /* ปรับแต่งตาราง HTML ที่เราสร้างเอง */
+    /* ปรับแต่งตาราง HTML */
     .custom-table {
         width: 100%;
         border-collapse: collapse;
@@ -21,11 +21,11 @@ st.markdown("""
         font-family: 'Sarabun', sans-serif;
     }
     .custom-table th {
-        background-color: #2E7D32; /* สีเขียวเข้ม สบายตา */
+        background-color: #2E7D32; /* สีเขียวเข้ม */
         color: white;
         padding: 10px;
         border: 1px solid #ddd;
-        white-space: normal; /* ยอมให้ตัดคำ */
+        white-space: normal;
         vertical-align: middle;
     }
     .custom-table td {
@@ -101,7 +101,7 @@ def load_data(files):
             
     return d, logs
 
-# --- PDF ---
+# --- PDF Engine ---
 class PDF(FPDF):
     def footer(self): self.set_y(-15); self.set_font('THSarabunNew','',10); self.cell(0,10,f'หน้า {self.page_no()}',0,0,'R')
 
@@ -118,8 +118,8 @@ def gen_pdf(df, entities, vkey, t_map):
         title = t_map.get(ent, ent) if vkey=='Teacher' else ent
         pdf.cell(0, 10, f"ตารางสอน: {title}", 0, 1, 'C')
         
-        # Header (Time First)
-        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 12, "วัน / เวลา", 1, 0, 'C', 1)
+        # Header (เปลี่ยนคำเป็น "วันที่")
+        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 12, "วันที่", 1, 0, 'C', 1)
         for p in PERIODS:
             if p=='Lunch':
                 txt = "12:30-13:30\n(พักกลางวัน)"
@@ -172,10 +172,12 @@ def gen_excel(df, t_map):
                 except: pass
                 
                 piv.index = piv.index.map(DAY_MAP)
+                # เปลี่ยนชื่อ Index เป็น "วันที่"
+                piv.index.name = "วันที่"
                 piv.columns = [TIME_MAP.get(c, str(c)) if c!='Lunch' else "12:30-13:30" for c in piv.columns]
                 
                 sh_name = f"{cfg['pfx']}{str(ent)[:20]}".replace(":","").replace("/","-")
-                piv.fillna('').to_excel(writer, sheet_name=sh_name)
+                piv.to_excel(writer, sheet_name=sh_name)
                 
                 ws = writer.sheets[sh_name]
                 ws.column_dimensions['A'].width = 15
@@ -229,8 +231,9 @@ if 'res' in st.session_state:
         sub['Disp'] = sub[cfg['cols'][0]] + "<br>" + sub[cfg['cols'][1]] + "<br>" + sub[cfg['cols'][2]]
         piv = sub.pivot_table(index='Day', columns='Period', values='Disp', aggfunc='first').reindex(DAYS_EN).fillna("-")
         
-        # --- HTML Table Construction (Fix Header) ---
-        h = "<table class='custom-table'><thead><tr><th>วัน / เวลา</th>"
+        # --- HTML Table Construction (Header with Time) ---
+        # เปลี่ยนหัวคอลัมน์แรกเป็น "วันที่"
+        h = "<table class='custom-table'><thead><tr><th>วันที่</th>"
         for p in PERIODS:
             if p == 'Lunch':
                 time_str = "12:30 - 13:30"
@@ -238,7 +241,6 @@ if 'res' in st.session_state:
             else:
                 time_str = TIME_MAP.get(p, "")
                 label = f"คาบ {p}"
-            # ใส่เวลาบรรทัดแรก ตัวหนา
             h += f"<th><span class='time-label'>{time_str}</span><br><span class='period-label'>{label}</span></th>"
         h += "</tr></thead><tbody>"
         
