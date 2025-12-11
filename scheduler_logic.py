@@ -4,11 +4,11 @@ class SchedulerCSP:
     def __init__(self, teachers, subjects, rooms, groups):
         self.rooms, self.master = rooms, self._prep(subjects)
         
-        # --- FIX KEYERROR ---
-        # รวมรายชื่อกลุ่มเรียนจากทั้งไฟล์ Groups และไฟล์ Subjects (กันพลาดกรณีชื่อไม่ตรง)
-        g_in_groups = set(groups['GroupID'].unique())
-        g_in_subjects = set(self.master['Group_ID'].unique())
-        self.all_groups = list(g_in_groups.union(g_in_subjects))
+        # --- ROBUSTNESS FIX: รวมรายชื่อกลุ่มจากทั้งไฟล์ Groups และ Subjects ---
+        # ป้องกัน KeyError กรณีในไฟล์วิชามีกลุ่มที่ไม่มีในทะเบียน
+        g_roster = set(groups['GroupID'].unique()) if 'GroupID' in groups else set()
+        g_subjs = set(self.master['Group_ID'].unique()) if 'Group_ID' in self.master else set()
+        self.all_groups = list(g_roster | g_subjs)
         
         # Heuristic Maps
         self.t_load = self.master.groupby('Teacher_ID')['Hours'].sum().to_dict()
@@ -16,7 +16,7 @@ class SchedulerCSP:
 
     def _prep(self, df):
         df = df.copy()
-        # แปลง Session เป็น List
+        # แปลง Session "4+3" -> [4, 3]
         parser = lambda x: [int(s) for s in str(x).split('+')] if '+' in str(x) else [int(x)]
         col = 'Session_Split' if 'Session_Split' in df else ('Hours' if 'Hours' in df else None)
         df['Sessions'] = df[col].apply(parser) if col else [[2]] * len(df)
@@ -25,7 +25,7 @@ class SchedulerCSP:
     def _reset(self):
         self.sched = {}
         self.busy = {'t': set(), 'g': set(), 'r': set()}
-        # สร้าง Load Tracker ให้ครบทุกกลุ่ม (รวมกลุ่มที่ตกหล่นด้วย)
+        # Init tracker ให้ครบทุกกลุ่ม (รวมกลุ่มผีที่ไม่มีในทะเบียนด้วย)
         self.g_daily = {g: {d: 0 for d in ['Mon','Tue','Wed','Thu','Fri']} for g in self.all_groups}
 
     def check(self, tid, gid, rid, day, dur, start):
@@ -42,15 +42,13 @@ class SchedulerCSP:
             p = start + i
             self.busy['t'].add((tid, day, p)); self.busy['g'].add((gid, day, p)); self.busy['r'].add((rid, day, p))
             self.sched.setdefault((day, p, gid), []).append({**sub, 'Room_ID': rid, 'Period': p, 'Day': day})
-        # Safe Update
         if gid in self.g_daily: self.g_daily[gid][day] += dur
 
     def try_book(self, sub, dur, rooms, days, agg):
         tid, gid = sub['Teacher_ID'], sub['Group_ID']
         
-        # Get Load อย่างปลอดภัย (ถ้าไม่มีให้คืน 0)
+        # Sort Days: ปกติ=เรียงตามโหลด, Aggressive=สุ่ม
         get_load = lambda d: self.g_daily.get(gid, {}).get(d, 0)
-        
         d_list = days[:] if agg else sorted(days, key=lambda d: (get_load(d), random.random()))
         if agg: random.shuffle(d_list)
         
@@ -61,7 +59,7 @@ class SchedulerCSP:
             for p in periods:
                 if p + dur - 1 > 8: continue
                 r_list = rooms[:]
-                if agg: random.shuffle(r_list)
+                if agg: random.shuffle(r_list) # สุ่มห้องถ้าจำเป็น
                 
                 for r in r_list:
                     if self.check(tid, gid, r, day, dur, p):
@@ -74,6 +72,7 @@ class SchedulerCSP:
         days, failed = ['Mon','Tue','Wed','Thu','Fri'], []
         
         for idx, row in subs.iterrows():
+            # กรองห้องที่ประเภทตรงกัน
             rooms = self.rooms[self.rooms['Type'] == row['Room_Type']]['RoomID'].tolist()
             if not rooms: failed.append(idx); continue
 
@@ -81,13 +80,14 @@ class SchedulerCSP:
             for dur in row['Sessions']:
                 if self.try_book(row, dur, rooms, days, agg): continue
                 
-                # Auto-Fragmentation
+                # Auto-Fragmentation (ระเบิดก้อนวิชา)
                 parts = [dur//2, dur - dur//2] if dur >= 2 else [dur]
                 actual = 0
                 for part in parts:
                     if self.try_book(row, part, rooms, days, True): 
                         actual += part
                     else:
+                        # ไม้ตาย: ยัดทีละ 1 คาบ
                         for _ in range(part):
                             if self.try_book(row, 1, rooms, days, True): actual += 1
                 
@@ -99,15 +99,18 @@ class SchedulerCSP:
     def generate_schedule(self, timeout_seconds=60):
         start, best_sch, min_fail, best_fail_list = time.time(), {}, float('inf'), []
         
+        # Super Priority Sorting
         df = self.master.copy()
-        # สูตรความยาก (ครู*50 + ห้อง*20 + ชม*10)
         df['Score'] = df.apply(lambda r: (self.t_load.get(r['Teacher_ID'], 0)*50) + 
                                          (self.g_load.get(r['Group_ID'], 0)*20) + 
                                          (r['Hours']*10), axis=1)
         prio_df = df.sort_values('Score', ascending=False).reset_index(drop=True)
         
+        attempt = 0
         while time.time() - start < timeout_seconds:
-            agg = (time.time() - start) > 5
+            attempt += 1
+            agg = (time.time() - start) > 5 # หลัง 5 วิ เปิดโหมดโหด
+            
             fails = self.solve(prio_df, agg)
             
             if len(fails) < min_fail:
