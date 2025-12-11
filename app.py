@@ -7,26 +7,31 @@ from io import BytesIO
 from fpdf import FPDF
 from openpyxl.styles import Alignment, Font, Border, Side, PatternFill
 
-st.set_page_config(page_title="ระบบจัดตารางสอน (Final Perfect)", layout="wide")
+st.set_page_config(page_title="ระบบจัดตารางสอน (Fixed Header)", layout="wide")
 
 # ==========================================
-# 1. CSS Styling (หัวตารางมีเวลา + สวยงาม)
+# 1. CSS Styling (แก้บั๊กหัวตารางหาย)
 # ==========================================
 st.markdown("""
 <style>
-    /* ซ่อนตารางเดิมของ Streamlit */
-    thead tr th:first-child {display:none}
-    tbody th {display:none}
+    /* ซ่อน Index ของตารางปกติ (st.table) */
+    .stTable thead tr th:first-child {display:none}
+    .stTable tbody th {display:none}
     
-    /* สไตล์ตารางใหม่ HTML Custom */
+    /* สไตล์ตารางเรียน (Custom HTML) */
     .custom-table {
         width: 100%;
         border-collapse: collapse;
         text-align: center;
         font-family: 'Sarabun', sans-serif;
         margin-bottom: 20px;
-        font-size: 14px;
     }
+    
+    /* *** สำคัญ: บังคับโชว์หัวตารางช่องแรก (วันที่) *** */
+    .custom-table thead tr th:first-child {
+        display: table-cell !important; 
+    }
+
     .custom-table th {
         background-color: #2E7D32; /* สีเขียว */
         color: white;
@@ -39,12 +44,12 @@ st.markdown("""
         padding: 8px;
         border: 1px solid #ddd;
         vertical-align: middle;
+        font-size: 14px;
     }
-    /* จัดรูปแบบตัวอักษรในหัวตาราง */
+    
+    /* จัดรูปแบบตัวอักษร */
     .time-txt { font-size: 13px; font-weight: bold; display: block; margin-bottom: 2px; color: #ffeb3b; }
     .period-txt { font-size: 12px; font-weight: normal; color: white; }
-    
-    /* จัดสีพื้นหลังวัน */
     .day-cell { font-weight: bold; background-color: #f1f8e9; color: #1b5e20; }
 </style>
 """, unsafe_allow_html=True)
@@ -125,11 +130,10 @@ def load_data(files):
                 df['CleanName'] = df[nm].apply(clean_str) if nm else df['TeacherID']
                 d['Teachers'] = df
             elif 'Subject_ID' in df: d['Subjects'], l = validate(df, None, 'Subjects')
-            else: l = [f"⚠️ ไม่รู้จักไฟล์: {f.name}"]
+            else: l = [f"⚠️ ไฟล์ไม่ระบุประเภท: {f.name}"]
             logs.extend(l)
-        except Exception as e: logs.append(f"🔥 Error {f.name}: {e}")
+        except Exception as e: logs.append(f"🔥 อ่านไฟล์ไม่ได้ {f.name}: {e}")
 
-    # Cross-Check
     if len(d) == 4:
         sub = d['Subjects']
         vt, vg = set(d['Teachers']['TeacherID']), set(d['Groups']['GroupID'])
@@ -163,8 +167,7 @@ def gen_pdf(df, entities, vkey, t_map):
         title = t_map.get(ent, ent) if vkey=='Teacher' else ent
         pdf.cell(0, 10, f"ตารางสอน: {title}", 0, 1, 'C')
         
-        # Header (Time)
-        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 12, "วัน / เวลา", 1, 0, 'C', 1)
+        pdf.set_font_size(12); pdf.set_fill_color(240); pdf.cell(20, 12, "วันที่", 1, 0, 'C', 1)
         for p in PERIODS:
             txt = "พักกลางวัน" if p=='Lunch' else f"{TIME_MAP[p]}\n(คาบ {p})"
             w = 15 if p=='Lunch' else 27
@@ -173,7 +176,6 @@ def gen_pdf(df, entities, vkey, t_map):
             pdf.set_xy(x+w, y)
         pdf.ln(12)
         
-        # Grid
         for d in DAYS_EN:
             pdf.set_font_size(14)
             pdf.cell(20, 22, DAY_MAP[d], 1, 0, 'C', 1)
@@ -188,7 +190,6 @@ def gen_pdf(df, entities, vkey, t_map):
                     else: pdf.cell(w, 22, "", 1, 0)
             pdf.ln()
         
-        # Legend (สำคัญ: ต้องมีตรงนี้)
         pdf.ln(5); pdf.set_font_size(12); pdf.cell(0, 8, "รายละเอียดรายวิชา:", 0, 1, 'L'); pdf.set_fill_color(230)
         wds = [25, 80, 40, 45]; [pdf.cell(wds[i], 7, h, 1, 0, 'C', 1) for i,h in enumerate(cfg['leg'])]; pdf.ln()
         for _,r in sub[cfg['leg_c']].drop_duplicates().iterrows():
@@ -233,7 +234,7 @@ up = st.sidebar.file_uploader("Upload CSV/Excel", accept_multiple_files=True)
 if up:
     data, logs = load_data(up)
     if logs:
-        with st.sidebar.expander("🛠️ บันทึกการตรวจสอบ (Validation Logs)", expanded=True):
+        with st.sidebar.expander("🛠️ รายงานการตรวจสอบ (Validation Logs)", expanded=True):
             for l in logs:
                 if "ลบ" in l or "ตัด" in l: st.warning(l)
                 elif "Error" in l: st.error(l)
@@ -272,16 +273,14 @@ if 'res' in st.session_state:
         sub['Disp'] = sub[cfg['cols'][0]] + "<br>" + sub[cfg['cols'][1]] + "<br>" + sub[cfg['cols'][2]]
         piv = sub.pivot_table(index='Day', columns='Period', values='Disp', aggfunc='first').reindex(DAYS_EN).fillna("-")
         
-        # --- HTML Table Construction (Header with Time) ---
-        h = "<table class='custom-table'><thead><tr><th>วัน / เวลา</th>"
+        # --- HTML Table Construction ---
+        h = "<table class='custom-table'><thead><tr><th>วันที่</th>"
         for p in PERIODS:
             if p == 'Lunch':
-                time_str = "12:30 - 13:30"
-                label = "พักกลางวัน"
+                t_str, lbl = "12:30 - 13:30", "พักกลางวัน"
             else:
-                time_str = TIME_MAP.get(p, "")
-                label = f"คาบ {p}"
-            h += f"<th><span class='time-txt'>{time_str}</span><span class='period-txt'>{label}</span></th>"
+                t_str, lbl = TIME_MAP.get(p, ""), f"คาบ {p}"
+            h += f"<th><span class='time-txt'>{t_str}</span><span class='period-txt'>{lbl}</span></th>"
         h += "</tr></thead><tbody>"
         
         for d in DAYS_EN:
@@ -296,10 +295,10 @@ if 'res' in st.session_state:
         c2.markdown(f"### {t_map.get(sel,sel) if vkey=='Teacher' else sel}")
         c2.markdown(h, unsafe_allow_html=True)
         
-        # --- Reference Table (ที่ขอคืนมา) ---
+        # --- รายละเอียดรายวิชา ---
         c2.markdown("#### ℹ️ รายละเอียดรายวิชา")
         ref_df = sub[cfg['leg_c']].drop_duplicates()
-        ref_df.columns = cfg['leg'] # Rename columns using Thai headers
+        ref_df.columns = cfg['leg'] # Rename
         c2.table(ref_df)
         
         c2.download_button("📄 PDF หน้านี้", gen_pdf(df, sel, vkey, t_map), f"{sel}.pdf", "application/pdf")
@@ -310,4 +309,4 @@ if 'res' in st.session_state:
     for i, (k, v) in enumerate(VIEWS.items()):
         if cols[i+1].button(f"📄 PDF {v['lbl'].split('(')[0]}"):
             st.session_state[f'p_{k}'] = gen_pdf(df, sorted(df[v['id']].unique()), k, t_map)
-        if f'p_{k}' in st.session_state: cols[i+1].download_button("⬇️ โหลด", st.session_state[f'p_{k}'], f"{k}s_Book.pdf")
+        if f'p_{k}' in st.session_state: cols[i+1].download_button("⬇️ โหลด", st.session_state[f'p_{k}'], f"{k}s.pdf")
