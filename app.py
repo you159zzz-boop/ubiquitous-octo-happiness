@@ -32,7 +32,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- Config: เวลาเรียน (แก้ไขตรงนี้ได้เลย) ---
-DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
+DAYS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์']
 PERIODS = [1, 2, 3, 4, 'Lunch', 5, 6, 7, 8]
 
 # Mapping เวลาที่จะไปโชว์บนหัวตาราง
@@ -266,3 +266,4 @@ if 'res' in st.session_state:
         if cols[i+1].button(f"📄 PDF {v['lbl'].split('(')[0]}"):
             st.session_state[f'p_{k}'] = gen_pdf(df, sorted(df[v['id']].unique()), k, t_map)
         if f'p_{k}' in st.session_state: cols[i+1].download_button("⬇️ โหลด", st.session_state[f'p_{k}'], f"{k}s_Book.pdf")
+
