@@ -1,4 +1,7 @@
-import pandas as pd, random, copy, time
+import pandas as pd
+import random
+import copy
+import time
 
 class SchedulerCSP:
     def __init__(self, teachers, subjects, rooms, groups):
@@ -25,7 +28,7 @@ class SchedulerCSP:
     def _reset(self):
         self.sched = {}
         self.busy = {'t': set(), 'g': set(), 'r': set()}
-        # Init tracker ให้ครบทุกกลุ่ม (รวมกลุ่มผีที่ไม่มีในทะเบียนด้วย)
+        # Init tracker ให้ครบทุกกลุ่ม (รวมกลุ่มที่ไม่มีในทะเบียนด้วย)
         self.g_daily = {g: {d: 0 for d in ['Mon','Tue','Wed','Thu','Fri']} for g in self.all_groups}
 
     def check(self, tid, gid, rid, day, dur, start):
