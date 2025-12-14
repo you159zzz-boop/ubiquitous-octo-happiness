@@ -385,7 +385,7 @@ class ReportGenerator:
                 pdf.cell(bw, h, "", 1, 0, fill=True)
                 pdf.set_xy(bx, cy+5)
                 pdf.multi_cell(bw, 5, f"{r['subject_id']}\n{r['room_id']}", 0, 'C')
-        return bytes(pdf.output(dest='S'))
+        return pdf.output(dest='S').encode('latin-1')
 
 # ==========================================
 # 5. MAIN UI
