@@ -12,7 +12,7 @@ from fpdf import FPDF
 # ==========================================
 # 1. CONFIGURATION & STYLING
 # ==========================================
-st.set_page_config(page_title="Smart Scheduler System", layout="wide", page_icon="📅")
+st.set_page_config(page_title="AI Smart Scheduler Ultimate", layout="wide", page_icon="📅")
 
 st.markdown("""
 <style>
@@ -29,16 +29,18 @@ st.markdown("""
     .class-card { background: #e3f2fd; border-left: 3px solid #1565c0; padding: 3px; border-radius: 3px; font-size: 0.75rem; overflow: hidden; height: 100%; text-align: left; }
     .class-card-sub { background: #e8f5e9; border-left: 3px solid #2e7d32; } /* สีเขียว: ครูแทน */
     .class-card-extra { background: #fff3e0; border-left: 3px solid #ef6c00; } /* สีส้ม: คาบพิเศษ */
+    .class-card-conflict { background: #ffebee; border-left: 3px solid #c62828; color: #b71c1c; font-weight: bold; animation: pulse 2s infinite; }
+    
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.8; } 100% { opacity: 1; } }
 
     .subject-title { font-weight: bold; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: inherit; }
-    .subject-detail { font-size: 0.7rem; opacity: 0.8; }
+    .subject-detail { font-size: 0.7rem; opacity: 0.8; display: block; }
 </style>
 """, unsafe_allow_html=True)
 
 DAYS = ['จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์']
 TIMES = [f"{h:02d}:00-{(h+1):02d}:00" for h in range(8, 21)]
 
-# Constants
 LUNCH_SLOT_INDEX = 4        # 12:00-13:00
 HOMEROOM_DAY = 0; HOMEROOM_SLOT = 0
 ACTIVITY_DAY = 2; ACTIVITY_SLOTS = [7, 8]
@@ -72,7 +74,8 @@ class SmartDataManager:
             'subject name': ['subject_name', 'course_name', 'ชื่อวิชา'],
             'teacher id': ['teacher_id', 'instructor_id', 'รหัสครู', 'ครูผู้สอน'],
             'credits': ['credits', 'credit', 'หน่วยกิต', 'ท-ป-น'],
-            'group': ['group', 'group_id', 'section', 'class', 'กลุ่มเรียน', 'ห้อง']
+            'group': ['group', 'group_id', 'section', 'class', 'กลุ่มเรียน', 'ห้อง'],
+            'room': ['room', 'location', 'สถานที่', 'ห้องเรียน'] # เพิ่ม Mapping ห้องเรียน
         }
     def clean_teacher_name(self, name):
         if not isinstance(name, str): return str(name)
@@ -103,6 +106,8 @@ class SmartDataManager:
             for std, kws in self.col_mapping.items():
                 if any(k in c_str for k in kws): new_cols[col] = std.title(); break
         df.rename(columns=new_cols, inplace=True)
+        
+        # Standardize Names
         norm_map = {'Subject Id': 'Subject ID', 'Subject Name': 'Subject Name', 'Teacher Id': 'Teacher ID', 'Credits': 'Credits'}
         df.rename(columns=norm_map, inplace=True); df = self.deduplicate_columns(df)
         if 'Teacher ID' in df.columns: df['Teacher ID'] = df['Teacher ID'].apply(self.clean_teacher_name)
@@ -124,17 +129,21 @@ class SmartDataManager:
                 for col in common: base_df[col] = base_df[col].astype(str); other_df[col] = other_df[col].astype(str)
                 base_df = pd.merge(base_df, other_df, on=common, how='left')
             else: base_df = pd.concat([base_df, other_df], ignore_index=True)
+        
         base_df.drop_duplicates(subset=['Teacher ID', 'Subject ID', 'Group'], inplace=True)
         
-        # Auto-Fix NaN Groups
         if 'Group' in base_df.columns:
             mask = base_df['Group'].isna() | (base_df['Group'].astype(str) == 'nan') | (base_df['Group'].astype(str).str.strip() == '')
-            if mask.any():
-                base_df.loc[mask, 'Group'] = [f"NoGroup_{i}" for i in range(mask.sum())]
+            if mask.any(): base_df.loc[mask, 'Group'] = [f"NoGroup_{i}" for i in range(mask.sum())]
         
         if 'Subject ID' in base_df.columns and 'Subject Name' not in base_df.columns: base_df['Subject Name'] = base_df['Subject ID']
         if 'Credits' not in base_df.columns: base_df['Credits'] = 2
         if 'Group' not in base_df.columns: base_df['Group'] = 'G-Mix'
+        
+        # Handle Room Default
+        if 'Room' not in base_df.columns: base_df['Room'] = '-'
+        else: base_df['Room'] = base_df['Room'].fillna('-')
+            
         return base_df
 
 # ==========================================
@@ -151,25 +160,28 @@ def inspect_data(df):
     return issues
 
 # ==========================================
-# 4. SCHEDULER ENGINE (Strict Protection)
+# 4. SCHEDULER ENGINE
 # ==========================================
 class CSPScheduler:
     def __init__(self, register_df):
         self.reg_df = register_df.copy()
         self.reg_df['Hours'] = pd.to_numeric(self.reg_df['Credits'], errors='coerce').fillna(2).astype(int)
+        
         self.teachers = self.reg_df['Teacher ID'].unique()
         self.groups = self.reg_df['Group'].unique()
         self.t_sched = {t: np.zeros(65, dtype=int) for t in self.teachers}
         self.g_sched = {g: np.zeros(65, dtype=int) for g in self.groups}
+        
         self.group_daily_load = {g: np.zeros(5, dtype=int) for g in self.groups}
         self.teacher_load_realtime = self.reg_df.groupby('Teacher ID')['Hours'].sum().to_dict()
         self.subject_teachers_map = self.reg_df.groupby('Subject ID')['Teacher ID'].unique().to_dict()
-        self.assignments = []; self.failed = []
+        
+        self.assignments = []
+        self.failed = []
 
     def check(self, tid, gid, slots, allow_lunch=False):
         for s in slots:
             day = s // 13; period = s % 13
-            # IRON WALL: STRICT NO-TOUCH ZONE
             if day == ACTIVITY_DAY and period in ACTIVITY_SLOTS: return False
             if day == HOMEROOM_DAY and period == HOMEROOM_SLOT: return False
             if not allow_lunch and period == LUNCH_SLOT_INDEX: return False
@@ -182,15 +194,19 @@ class CSPScheduler:
     def book(self, task, slots, actual_tid=None, suffix="", is_extra=False):
         tid = actual_tid if actual_tid else task['Teacher ID']
         gid = task['Group']
+        room = task.get('Room', '-')
+        
         if tid not in self.t_sched: self.t_sched[tid] = np.zeros(65, dtype=int)
         self.t_sched[tid][slots] = 1; self.g_sched[gid][slots] = 1
         day = slots[0] // 13; period = slots[0] % 13
         self.group_daily_load[gid][day] += len(slots)
         self.teacher_load_realtime[tid] = self.teacher_load_realtime.get(tid, 0) + len(slots)
+        
         self.assignments.append({
             'Day': DAYS[day], 'Period': period, 'Time': TIMES[period],
             'Subject Name': str(task.get('Subject Name', '?')) + suffix,
-            'Teacher ID': tid, 'Group': gid, 'Duration': len(slots),
+            'Teacher ID': tid, 'Group': gid, 'Room': room,
+            'Duration': len(slots),
             'IsSub': True if actual_tid and actual_tid != task['Teacher ID'] else False,
             'IsExtra': is_extra
         })
@@ -222,6 +238,7 @@ class CSPScheduler:
             for p in range(max_period - dur + 1):
                 slots = range(start + p, start + p + dur)
                 if self.check(tid, gid, slots, allow_lunch): return slots, None
+        
         if allow_split and dur > 2:
             half = dur // 2; rem = dur - half
             s1 = None; s2 = None
@@ -282,7 +299,7 @@ class CSPScheduler:
                         else: self.book(task, s1_sub, actual_tid=sub_tid, suffix=sub_suf+"(1)"); self.book(task, s2_sub, actual_tid=sub_tid, suffix=sub_suf+"(2)")
                         allocated = True; break
             
-            # 3. Liquid Fill (Strict check ensures no Activity overlap)
+            # 3. Liquid Fill
             if not allocated:
                 slots_collected = []
                 temp_sched_t = self.t_sched[org_tid].copy() if org_tid in self.t_sched else np.zeros(65, int)
@@ -301,7 +318,7 @@ class CSPScheduler:
                     for idx, slot in enumerate(slots_collected): self.book(task, slot, suffix=f"({idx+1}/{dur})", is_extra=True)
                     allocated = True
             
-            # 4. Desperate (Lunch/Evening) - Check still protects Activity
+            # 4. Desperate (Lunch/Evening)
             if not allocated:
                 s1, s2 = self.try_allocate(task, org_tid, gid, dur, allow_lunch=True, max_period=13)
                 if s1 or s2:
@@ -328,7 +345,7 @@ class CSPScheduler:
         return pd.DataFrame(self.assignments), self.failed
 
 # ==========================================
-# 5. REPORT GENERATOR (PDF Grid + All Export)
+# 5. REPORT GENERATOR (Enhanced for Room View)
 # ==========================================
 class ReportGenerator:
     def export_excel(self, df):
@@ -346,35 +363,35 @@ class ReportGenerator:
         pdf.set_font_size(16); pdf.cell(0, 10, title, ln=True, align='C')
         pdf.set_font_size(10 if font_ready else 8)
         
-        # Header
         pdf.set_x(margin + day_w)
         for t in TIMES[:13]: pdf.cell(col_w, header_h, t.split('-')[0], 1, 0, 'C')
         pdf.ln(header_h)
         
-        # Rows
         for d_idx, day in enumerate(DAYS):
             pdf.set_x(margin); pdf.cell(day_w, row_h, day, 1, 0, 'C')
             skip = 0
             for p in range(13):
                 if skip > 0: skip -= 1; continue
-                
-                is_lunch = (p == LUNCH_SLOT_INDEX)
-                is_hr = (d_idx == HOMEROOM_DAY and p == HOMEROOM_SLOT)
-                is_act = (d_idx == ACTIVITY_DAY and p in ACTIVITY_SLOTS)
-                
+                is_lunch = (p == LUNCH_SLOT_INDEX); is_hr = (d_idx == HOMEROOM_DAY and p == HOMEROOM_SLOT); is_act = (d_idx == ACTIVITY_DAY and p in ACTIVITY_SLOTS)
                 match = df[(df['Day'] == day) & (df['Period'] == p)]
                 x_curr = pdf.get_x(); y_curr = pdf.get_y()
                 
                 if not match.empty:
                     info = match.iloc[0]; dur = info['Duration']
                     subj = str(info['Subject Name'])[:15]
-                    det = str(info['Group']) if mode == "Teacher" else str(info['Teacher ID'])
-                    if len(det) > 10: det = det[:8] + ".." 
+                    
+                    # Logic for displaying text based on mode
+                    line2 = ""
+                    if mode == "Teacher": line2 = str(info['Group'])
+                    elif mode == "Group": line2 = str(info['Teacher ID'])
+                    elif mode == "Room": line2 = f"{str(info['Teacher ID'])}\n{str(info['Group'])}"
+                    
+                    if len(line2) > 12 and mode != "Room": line2 = line2[:10] + ".." 
                     
                     pdf.set_fill_color(220, 240, 255)
                     pdf.cell(col_w * dur, row_h, "", 1, 0, 'C', fill=True)
                     pdf.set_xy(x_curr, y_curr + 4)
-                    pdf.multi_cell(col_w * dur, 4, f"{subj}\n{det}", 0, 'C')
+                    pdf.multi_cell(col_w * dur, 4, f"{subj}\n{line2}", 0, 'C')
                     pdf.set_xy(x_curr + (col_w * dur), y_curr)
                     skip = dur - 1
                 elif is_hr:
@@ -387,13 +404,23 @@ class ReportGenerator:
                     pdf.cell(col_w, row_h, "", 1, 0, 'C')
             pdf.ln(row_h)
 
+    def export_pdf_grid(self, df, title, mode):
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
+        font_path = 'THSarabunNew.ttf'
+        font_ready = os.path.exists(font_path)
+        if font_ready: 
+            pdf.add_font('THSarabunNew', '', font_path, uni=True); pdf.set_font('THSarabunNew', '', 10)
+        else: pdf.set_font('Arial', '', 8)
+        
+        self._create_pdf_page(pdf, df, title, mode, font_ready)
+        return pdf.output(dest='S').encode('latin-1')
+
     def export_all_pdfs(self, df):
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         font_path = 'THSarabunNew.ttf'
         font_ready = os.path.exists(font_path)
         if font_ready: 
-            pdf.add_font('THSarabunNew', '', font_path, uni=True)
-            pdf.set_font('THSarabunNew', '', 10)
+            pdf.add_font('THSarabunNew', '', font_path, uni=True); pdf.set_font('THSarabunNew', '', 10)
         else: pdf.set_font('Arial', '', 8)
         
         # 1. Teachers
@@ -408,7 +435,7 @@ class ReportGenerator:
             sub = df[df['Group'] == g]
             self._create_pdf_page(pdf, sub, f"Schedule: Group {g}", "Group", font_ready)
             
-        return bytes(pdf.output(dest='S'))
+        return pdf.output(dest='S').encode('latin-1')
 
 def render_timetable_html(df, title, mode):
     html_rows = ""
@@ -427,7 +454,13 @@ def render_timetable_html(df, title, mode):
                 html_rows += "<td class='td-free'></td>"
             else:
                 info = match.iloc[0]; dur = info['Duration']
-                subj = info['Subject Name']; det = info['Group'] if mode == "ครูผู้สอน" else info['Teacher ID']
+                subj = info['Subject Name']
+                
+                # Show Details based on View
+                if mode == "ครูผู้สอน": det = info['Group']
+                elif mode == "กลุ่มเรียน": det = info['Teacher ID']
+                elif mode == "ห้องเรียน": det = f"{info['Teacher ID']} / {info['Group']}"
+                
                 is_sub = info.get('IsSub', False); is_extra = info.get('IsExtra', False)
                 card_class = "class-card"
                 if is_sub: card_class += " class-card-sub"
@@ -445,7 +478,7 @@ def main():
     auth = AuthManager()
 
     if not st.session_state['logged_in']:
-        st.title("🔐Smart Scheduler System")
+        st.title("🔐 AI Scheduler Ultimate")
         tab1, tab2 = st.tabs(["เข้าสู่ระบบ", "สมัครสมาชิก"])
         with tab1:
             u, p = st.text_input("Username"), st.text_input("Password", type="password")
@@ -463,7 +496,7 @@ def main():
     st.sidebar.title(f"👤 {st.session_state['username']}")
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
 
-    st.title("📅 Smart Scheduler System")
+    st.title("📅 AI Scheduler: Master Edition")
 
     uploaded_files = st.file_uploader("1. อัปโหลดไฟล์", type=['xlsx','csv'], accept_multiple_files=True)
     with st.expander("🛠️ ตั้งค่าการอ่านไฟล์"):
@@ -553,22 +586,39 @@ def main():
         
         if not res.empty:
             res['Teacher ID'] = res['Teacher ID'].astype(str); res['Group'] = res['Group'].astype(str)
-            mode = st.radio("เลือกมุมมอง", ["ครูผู้สอน", "กลุ่มเรียน"], horizontal=True)
+            # Added "ห้องเรียน" Mode
+            mode = st.radio("เลือกมุมมอง", ["ครูผู้สอน", "กลุ่มเรียน", "ห้องเรียน"], horizontal=True)
+            
+            # View Selection Logic
             if mode == "ครูผู้สอน":
                 items = sorted(res['Teacher ID'].unique())
                 sel = st.selectbox("เลือกครู:", items); subset = res[res['Teacher ID'] == sel]
-            else:
+                pdf_mode = "Teacher"
+            elif mode == "กลุ่มเรียน":
                 items = sorted(res['Group'].unique())
                 sel = st.selectbox("เลือกกลุ่ม:", items); subset = res[res['Group'] == sel]
-            
-            render_timetable_html(subset, f"ตารางสอน: {sel}", mode)
+                pdf_mode = "Group"
+            else: # ห้องเรียน
+                if 'Room' in res.columns:
+                    items = sorted(res['Room'].unique())
+                    sel = st.selectbox("เลือกห้อง:", items); subset = res[res['Room'] == sel]
+                    pdf_mode = "Room"
+                else:
+                    st.warning("ไม่พบข้อมูลห้องเรียนในไฟล์ที่อัปโหลด"); subset = pd.DataFrame()
+                    pdf_mode = None
+
+            if not subset.empty:
+                render_timetable_html(subset, f"ตารางสอน: {sel}", mode)
+                
+                # Context-specific Buttons
+                rg = ReportGenerator()
+                c1, c2 = st.columns(2)
+                c1.download_button(f"📄 โหลด PDF ({sel})", rg.export_pdf_grid(subset, f"Table: {sel}", pdf_mode), f"{sel}.pdf")
+                c2.download_button("💾 โหลด Excel", rg.export_excel(subset), f"{sel}.xlsx")
             
             st.write("---")
-            rg = ReportGenerator()
-            c1, c2 = st.columns(2)
-            c1.download_button("💾 Excel", rg.export_excel(res), "schedule.xlsx")
-            c2.download_button("📥 ดาวน์โหลดตารางสอนทั้งหมด (All PDF)", rg.export_all_pdfs(res), "all_schedules.pdf")
+            # Global Export Button
+            st.download_button("📥 ดาวน์โหลดตารางสอนทั้งหมด (All PDF)", ReportGenerator().export_all_pdfs(res), "all_schedules.pdf", type="primary", use_container_width=True)
 
 if __name__ == "__main__":
     main()
-
