@@ -12,7 +12,7 @@ from fpdf import FPDF
 # ==========================================
 # 1. CONFIGURATION & STYLING
 # ==========================================
-st.set_page_config(page_title="AI Smart Scheduler Ultimate", layout="wide", page_icon="📅")
+st.set_page_config(page_title="Smart Scheduler System", layout="wide", page_icon="📅")
 
 st.markdown("""
 <style>
@@ -478,7 +478,7 @@ def main():
     auth = AuthManager()
 
     if not st.session_state['logged_in']:
-        st.title("🔐 AI Scheduler Ultimate")
+        st.title("🔐 Smart Scheduler System")
         tab1, tab2 = st.tabs(["เข้าสู่ระบบ", "สมัครสมาชิก"])
         with tab1:
             u, p = st.text_input("Username"), st.text_input("Password", type="password")
@@ -496,7 +496,7 @@ def main():
     st.sidebar.title(f"👤 {st.session_state['username']}")
     if st.sidebar.button("Logout"): st.session_state['logged_in'] = False; st.rerun()
 
-    st.title("📅 AI Scheduler: Master Edition")
+    st.title("📅 Smart Scheduler System")
 
     uploaded_files = st.file_uploader("1. อัปโหลดไฟล์", type=['xlsx','csv'], accept_multiple_files=True)
     with st.expander("🛠️ ตั้งค่าการอ่านไฟล์"):
@@ -622,3 +622,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
